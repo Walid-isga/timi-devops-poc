@@ -3,33 +3,38 @@ name: CD
 on:
   push:
     branches: [ "main" ]
-  # (optional) run CD only after CI succeeds:
-  # workflow_run:
-  #   workflows: ["CI"]
-  #   types: [ "completed" ]
 
 jobs:
   deploy-to-kind:
-    # keep this simple so it picks your runner that shows "Listening for Jobs"
-    runs-on: [ self-hosted, Windows, X64 ]
+    runs-on: self-hosted  # your runner ("Listening for Jobs")
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}   # e.g. walid-isga/timi-devops-poc
+      IMAGE_NAME: ${{ github.repository }}       # e.g. walid-isga/timi-devops-poc
       SHA_TAG: ${{ github.sha }}
       K8S_NAMESPACE: timi
       K8S_DEPLOYMENT: timi-api
+      CLUSTER_NAME: timi
+      KCTX: kind-timi
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Tooling versions
+      - name: Sanity check tools & cluster
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "Tools:"
           docker --version
           kind --version
           kubectl version --client
-          kubectl config current-context
+          Write-Host "`nKind clusters:"
+          kind get clusters
+          if (-not (kind get clusters | Select-String -SimpleMatch $env:CLUSTER_NAME)) {
+            throw "Kind cluster '$env:CLUSTER_NAME' not found. Create it first: kind create cluster --name $env:CLUSTER_NAME --image kindest/node:v1.30.0"
+          }
+          kubectl config use-context $env:KCTX
+          kubectl get nodes
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -38,41 +43,52 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull image (SHA & latest)
+      - name: Decide image tag (prefer SHA, else latest)
+        id: picktag
         shell: pwsh
         run: |
-          docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.SHA_TAG }}"
-          docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          $ErrorActionPreference = "Continue"    # try SHA first; don't crash on failure
+          $imgSha = "${env:REGISTRY}/${env:IMAGE_NAME}:${env:SHA_TAG}"
+          $imgLatest = "${env:REGISTRY}/${env:IMAGE_NAME}:latest"
+          Write-Host "Trying to pull $imgSha ..."
+          if (docker pull $imgSha) {
+            echo "use_tag=${env:SHA_TAG}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+          Write-Host "SHA tag not found (maybe CI hasn’t pushed it yet). Fallback to :latest"
+          if (-not (docker pull $imgLatest)) { throw "Cannot pull :latest either" }
+          echo "use_tag=latest" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Load image into Kind
         shell: pwsh
         run: |
-          kind load docker-image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.SHA_TAG }}" --name timi
+          $tag = "${{ steps.picktag.outputs.use_tag }}"
+          $img = "${env:REGISTRY}/${env:IMAGE_NAME}:$tag"
+          Write-Host "Loading $img into kind cluster $env:CLUSTER_NAME ..."
+          kind load docker-image $img --name $env:CLUSTER_NAME
 
-      - name: Use kind context
+      - name: Apply Kubernetes manifests
         shell: pwsh
         run: |
-          kubectl config use-context kind-timi
-          kubectl get nodes
-
-      - name: Apply manifests
-        shell: pwsh
-        run: |
+          kubectl config use-context $env:KCTX
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      - name: Set deployment image to this commit (rolling update)
+      - name: Update deployment image to selected tag
         shell: pwsh
         run: |
-          kubectl -n $env:K8S_NAMESPACE set image deployment/$env:K8S_DEPLOYMENT $env:K8S_DEPLOYMENT="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.SHA_TAG }}"
+          $tag = "${{ steps.picktag.outputs.use_tag }}"
+          $img = "${env:REGISTRY}/${env:IMAGE_NAME}:$tag"
+          kubectl -n $env:K8S_NAMESPACE set image deployment/$env:K8S_DEPLOYMENT $env:K8S_DEPLOYMENT="$img"
 
       - name: Wait for rollout
         shell: pwsh
         run: |
           kubectl -n $env:K8S_NAMESPACE rollout status deploy/$env:K8S_DEPLOYMENT --timeout=180s
+          kubectl -n $env:K8S_NAMESPACE get pods -o wide
 
-      - name: Sanity check /health from inside cluster
+      - name: Sanity check /health inside cluster
         shell: pwsh
         run: |
           $pod = (kubectl -n $env:K8S_NAMESPACE get pod -l app=$env:K8S_DEPLOYMENT -o jsonpath="{.items[0].metadata.name}")
