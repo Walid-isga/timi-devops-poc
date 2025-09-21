@@ -11,7 +11,7 @@ on:
 jobs:
   deploy-to-kind:
     # keep this simple so it picks your runner that shows "Listening for Jobs"
-    runs-on: [ self-hosted ]
+    runs-on: [ self-hosted, Windows, X64 ]
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository }}   # e.g. walid-isga/timi-devops-poc
