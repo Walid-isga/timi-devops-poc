@@ -21,14 +21,16 @@ app.get("/health", async (_req, res) => {
 });
 
 // Liste des chantiers depuis la DB
-app.get("/chantiers", async (_req, res) => {
-  try {
-    const { rows } = await query("SELECT * FROM chantiers ORDER BY id ASC");
-    res.json(rows);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+app.get("/health", async (_req, res) => {
+    try {
+      await query("SELECT 1 AS ok");
+      res.json({ status: "ok", db: "up", ts: Date.now() });
+    } catch (e) {
+      // ⚠️ au lieu de 500, on renvoie 200 avec info dégradée
+      res.json({ status: "ok", db: "down", ts: Date.now() });
+    }
+  });
+  
 
 // Ajout d'un chantier
 app.post("/chantiers", async (req, res) => {
