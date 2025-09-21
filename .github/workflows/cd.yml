@@ -11,7 +11,6 @@ jobs:
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: walid-isga/timi-devops-poc   # lowercase
-      SHA_TAG: ${{ github.sha }}
       K8S_NAMESPACE: timi
       K8S_DEPLOYMENT: timi-api
       KCTX: kind-timi
@@ -20,55 +19,29 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # Discover absolute paths (handles PATH not being updated for the runner process)
-      - name: Locate kind & kubectl
+      # Download a portable kubectl (no need to rely on PATH)
+      - name: Fetch kubectl v1.30.0 (portable)
         shell: cmd
         run: |
-          echo === PATH ===
-          echo %PATH%
-          echo === Locate kind ===
-          where kind
-          if %errorlevel% neq 0 ( echo kind.exe not found & exit /b 1 )
-          for /f "delims=" %%i in ('where kind') do set KIND_EXE=%%i
-          echo KIND_EXE=%KIND_EXE%>> %GITHUB_ENV%
-          echo Using KIND_EXE=%KIND_EXE%
-          echo === Locate kubectl ===
-          where kubectl
-          if %errorlevel% neq 0 ( echo kubectl.exe not found & exit /b 1 )
-          for /f "delims=" %%i in ('where kubectl') do set KUBECTL_EXE=%%i
-          echo KUBECTL_EXE=%KUBECTL_EXE%>> %GITHUB_ENV%
-          echo Using KUBECTL_EXE=%KUBECTL_EXE%
+          powershell -Command "Invoke-WebRequest -Uri https://dl.k8s.io/release/v1.30.0/bin/windows/amd64/kubectl.exe -OutFile kubectl.exe"
+          if not exist kubectl.exe ( echo kubectl.exe download failed & exit /b 1 )
+          echo KUBECTL_EXE=%CD%\kubectl.exe>> %GITHUB_ENV%
 
-      - name: Sanity check tools & cluster
+      - name: Sanity check cluster
         shell: cmd
         run: |
-          "%KIND_EXE%" --version
           "%KUBECTL_EXE%" version --client
           "%KUBECTL_EXE%" config use-context %KCTX%
           "%KUBECTL_EXE%" get nodes
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Keep it simple: deploy :latest (you can re-enable SHA later)
-      - name: Pull :latest for visibility (optional)
-        shell: cmd
-        run: |
-          docker pull %REGISTRY%/%IMAGE_NAME%:latest
-
       - name: Apply manifests
         shell: cmd
         run: |
-          "%KUBECTL_EXE%" config use-context %KCTX%
           "%KUBECTL_EXE%" apply -f k8s/namespace.yaml
           "%KUBECTL_EXE%" apply -f k8s/deployment.yaml
           "%KUBECTL_EXE%" apply -f k8s/service.yaml
 
-      - name: Set deployment image to :latest (cluster will pull from GHCR)
+      - name: Set deployment image to :latest (cluster pulls from GHCR)
         shell: cmd
         run: |
           "%KUBECTL_EXE%" -n %K8S_NAMESPACE% set image deployment/%K8S_DEPLOYMENT% %K8S_DEPLOYMENT%=%REGISTRY%/%IMAGE_NAME%:latest
