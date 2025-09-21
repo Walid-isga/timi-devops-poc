@@ -1,0 +1,8 @@
+# Empêche d'envoyer ces fichiers dans le build Docker
+node_modules
+npm-debug.log
+Dockerfile*
+.dockerignore
+.git
+.gitignore
+.env
