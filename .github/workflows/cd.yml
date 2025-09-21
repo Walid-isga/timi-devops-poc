@@ -10,7 +10,7 @@ jobs:
 
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
+      IMAGE_NAME: walid-isga/timi-devops-poc   # 👈 lowercase fixed
       SHA_TAG: ${{ github.sha }}
       K8S_NAMESPACE: timi
       K8S_DEPLOYMENT: timi-api
@@ -30,7 +30,7 @@ jobs:
           kubectl version --client
           echo === Kind clusters ===
           kind get clusters
-          kubectl config use-context kind-timi
+          kubectl config use-context %KCTX%
           kubectl get nodes
 
       - name: Login to GHCR
