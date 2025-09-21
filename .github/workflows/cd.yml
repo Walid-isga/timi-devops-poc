@@ -6,10 +6,11 @@ on:
 
 jobs:
   deploy-to-kind:
-    runs-on: self-hosted  # your runner ("Listening for Jobs")
+    runs-on: self-hosted   # will target your Windows runner
+
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}       # e.g. walid-isga/timi-devops-poc
+      IMAGE_NAME: ${{ github.repository }}
       SHA_TAG: ${{ github.sha }}
       K8S_NAMESPACE: timi
       K8S_DEPLOYMENT: timi-api
@@ -21,75 +22,71 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Sanity check tools & cluster
-        shell: pwsh
+        shell: cmd
         run: |
-          $ErrorActionPreference = "Stop"
-          Write-Host "Tools:"
+          echo === Tools ===
           docker --version
           kind --version
           kubectl version --client
-          Write-Host "`nKind clusters:"
+          echo === Kind clusters ===
           kind get clusters
-          if (-not (kind get clusters | Select-String -SimpleMatch $env:CLUSTER_NAME)) {
-            throw "Kind cluster '$env:CLUSTER_NAME' not found. Create it first: kind create cluster --name $env:CLUSTER_NAME --image kindest/node:v1.30.0"
-          }
-          kubectl config use-context $env:KCTX
+          kubectl config use-context kind-timi
           kubectl get nodes
 
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Decide image tag (prefer SHA, else latest)
+      - name: Pull image (prefer SHA, fallback to latest)
         id: picktag
-        shell: pwsh
+        shell: cmd
         run: |
-          $ErrorActionPreference = "Continue"    # try SHA first; don't crash on failure
-          $imgSha = "${env:REGISTRY}/${env:IMAGE_NAME}:${env:SHA_TAG}"
-          $imgLatest = "${env:REGISTRY}/${env:IMAGE_NAME}:latest"
-          Write-Host "Trying to pull $imgSha ..."
-          if (docker pull $imgSha) {
-            echo "use_tag=${env:SHA_TAG}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            exit 0
-          }
-          Write-Host "SHA tag not found (maybe CI hasn’t pushed it yet). Fallback to :latest"
-          if (-not (docker pull $imgLatest)) { throw "Cannot pull :latest either" }
-          echo "use_tag=latest" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          setlocal enabledelayedexpansion
+          set IMG_SHA=%REGISTRY%/%IMAGE_NAME%:%SHA_TAG%
+          set IMG_LATEST=%REGISTRY%/%IMAGE_NAME%:latest
+          echo Trying %IMG_SHA%
+          docker pull %IMG_SHA%
+          if %errorlevel%==0 (
+            echo use_tag=%SHA_TAG%>> %GITHUB_OUTPUT%
+            exit /b 0
+          )
+          echo SHA not found, fallback to latest
+          docker pull %IMG_LATEST%
+          echo use_tag=latest>> %GITHUB_OUTPUT%
 
       - name: Load image into Kind
-        shell: pwsh
+        shell: cmd
         run: |
-          $tag = "${{ steps.picktag.outputs.use_tag }}"
-          $img = "${env:REGISTRY}/${env:IMAGE_NAME}:$tag"
-          Write-Host "Loading $img into kind cluster $env:CLUSTER_NAME ..."
-          kind load docker-image $img --name $env:CLUSTER_NAME
+          set TAG=${{ steps.picktag.outputs.use_tag }}
+          set IMG=%REGISTRY%/%IMAGE_NAME%:%TAG%
+          kind load docker-image %IMG% --name %CLUSTER_NAME%
 
-      - name: Apply Kubernetes manifests
-        shell: pwsh
+      - name: Apply manifests
+        shell: cmd
         run: |
-          kubectl config use-context $env:KCTX
+          kubectl config use-context %KCTX%
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      - name: Update deployment image to selected tag
-        shell: pwsh
+      - name: Update deployment image
+        shell: cmd
         run: |
-          $tag = "${{ steps.picktag.outputs.use_tag }}"
-          $img = "${env:REGISTRY}/${env:IMAGE_NAME}:$tag"
-          kubectl -n $env:K8S_NAMESPACE set image deployment/$env:K8S_DEPLOYMENT $env:K8S_DEPLOYMENT="$img"
+          set TAG=${{ steps.picktag.outputs.use_tag }}
+          set IMG=%REGISTRY%/%IMAGE_NAME%:%TAG%
+          kubectl -n %K8S_NAMESPACE% set image deployment/%K8S_DEPLOYMENT% %K8S_DEPLOYMENT%=%IMG%
 
       - name: Wait for rollout
-        shell: pwsh
+        shell: cmd
         run: |
-          kubectl -n $env:K8S_NAMESPACE rollout status deploy/$env:K8S_DEPLOYMENT --timeout=180s
-          kubectl -n $env:K8S_NAMESPACE get pods -o wide
+          kubectl -n %K8S_NAMESPACE% rollout status deploy/%K8S_DEPLOYMENT% --timeout=180s
+          kubectl -n %K8S_NAMESPACE% get pods -o wide
 
       - name: Sanity check /health inside cluster
-        shell: pwsh
+        shell: cmd
         run: |
-          $pod = (kubectl -n $env:K8S_NAMESPACE get pod -l app=$env:K8S_DEPLOYMENT -o jsonpath="{.items[0].metadata.name}")
-          kubectl -n $env:K8S_NAMESPACE exec $pod -- sh -c "wget -qO- http://localhost:5000/health || true"
+          for /f "delims=" %%i in ('kubectl -n %K8S_NAMESPACE% get pod -l app=%K8S_DEPLOYMENT% -o jsonpath="{.items[0].metadata.name}"') do set POD=%%i
+          kubectl -n %K8S_NAMESPACE% exec %POD% -- sh -c "wget -qO- http://localhost:5000/health || true"
