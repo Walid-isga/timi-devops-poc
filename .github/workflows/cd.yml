@@ -6,32 +6,46 @@ on:
 
 jobs:
   deploy-to-kind:
-    runs-on: self-hosted   # will target your Windows runner
+    runs-on: self-hosted
 
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: walid-isga/timi-devops-poc   # 👈 lowercase fixed
+      IMAGE_NAME: walid-isga/timi-devops-poc   # lowercase
       SHA_TAG: ${{ github.sha }}
       K8S_NAMESPACE: timi
       K8S_DEPLOYMENT: timi-api
-      CLUSTER_NAME: timi
       KCTX: kind-timi
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      # Discover absolute paths (handles PATH not being updated for the runner process)
+      - name: Locate kind & kubectl
+        shell: cmd
+        run: |
+          echo === PATH ===
+          echo %PATH%
+          echo === Locate kind ===
+          where kind
+          if %errorlevel% neq 0 ( echo kind.exe not found & exit /b 1 )
+          for /f "delims=" %%i in ('where kind') do set KIND_EXE=%%i
+          echo KIND_EXE=%KIND_EXE%>> %GITHUB_ENV%
+          echo Using KIND_EXE=%KIND_EXE%
+          echo === Locate kubectl ===
+          where kubectl
+          if %errorlevel% neq 0 ( echo kubectl.exe not found & exit /b 1 )
+          for /f "delims=" %%i in ('where kubectl') do set KUBECTL_EXE=%%i
+          echo KUBECTL_EXE=%KUBECTL_EXE%>> %GITHUB_ENV%
+          echo Using KUBECTL_EXE=%KUBECTL_EXE%
+
       - name: Sanity check tools & cluster
         shell: cmd
         run: |
-          echo === Tools ===
-          docker --version
-          kind --version
-          kubectl version --client
-          echo === Kind clusters ===
-          kind get clusters
-          kubectl config use-context %KCTX%
-          kubectl get nodes
+          "%KIND_EXE%" --version
+          "%KUBECTL_EXE%" version --client
+          "%KUBECTL_EXE%" config use-context %KCTX%
+          "%KUBECTL_EXE%" get nodes
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -40,53 +54,33 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull image (prefer SHA, fallback to latest)
-        id: picktag
+      # Keep it simple: deploy :latest (you can re-enable SHA later)
+      - name: Pull :latest for visibility (optional)
         shell: cmd
         run: |
-          setlocal enabledelayedexpansion
-          set IMG_SHA=%REGISTRY%/%IMAGE_NAME%:%SHA_TAG%
-          set IMG_LATEST=%REGISTRY%/%IMAGE_NAME%:latest
-          echo Trying %IMG_SHA%
-          docker pull %IMG_SHA%
-          if %errorlevel%==0 (
-            echo use_tag=%SHA_TAG%>> %GITHUB_OUTPUT%
-            exit /b 0
-          )
-          echo SHA not found, fallback to latest
-          docker pull %IMG_LATEST%
-          echo use_tag=latest>> %GITHUB_OUTPUT%
-
-      - name: Load image into Kind
-        shell: cmd
-        run: |
-          set TAG=${{ steps.picktag.outputs.use_tag }}
-          set IMG=%REGISTRY%/%IMAGE_NAME%:%TAG%
-          kind load docker-image %IMG% --name %CLUSTER_NAME%
+          docker pull %REGISTRY%/%IMAGE_NAME%:latest
 
       - name: Apply manifests
         shell: cmd
         run: |
-          kubectl config use-context %KCTX%
-          kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f k8s/deployment.yaml
-          kubectl apply -f k8s/service.yaml
+          "%KUBECTL_EXE%" config use-context %KCTX%
+          "%KUBECTL_EXE%" apply -f k8s/namespace.yaml
+          "%KUBECTL_EXE%" apply -f k8s/deployment.yaml
+          "%KUBECTL_EXE%" apply -f k8s/service.yaml
 
-      - name: Update deployment image
+      - name: Set deployment image to :latest (cluster will pull from GHCR)
         shell: cmd
         run: |
-          set TAG=${{ steps.picktag.outputs.use_tag }}
-          set IMG=%REGISTRY%/%IMAGE_NAME%:%TAG%
-          kubectl -n %K8S_NAMESPACE% set image deployment/%K8S_DEPLOYMENT% %K8S_DEPLOYMENT%=%IMG%
+          "%KUBECTL_EXE%" -n %K8S_NAMESPACE% set image deployment/%K8S_DEPLOYMENT% %K8S_DEPLOYMENT%=%REGISTRY%/%IMAGE_NAME%:latest
 
       - name: Wait for rollout
         shell: cmd
         run: |
-          kubectl -n %K8S_NAMESPACE% rollout status deploy/%K8S_DEPLOYMENT% --timeout=180s
-          kubectl -n %K8S_NAMESPACE% get pods -o wide
+          "%KUBECTL_EXE%" -n %K8S_NAMESPACE% rollout status deploy/%K8S_DEPLOYMENT% --timeout=240s
+          "%KUBECTL_EXE%" -n %K8S_NAMESPACE% get pods -o wide
 
       - name: Sanity check /health inside cluster
         shell: cmd
         run: |
-          for /f "delims=" %%i in ('kubectl -n %K8S_NAMESPACE% get pod -l app=%K8S_DEPLOYMENT% -o jsonpath="{.items[0].metadata.name}"') do set POD=%%i
-          kubectl -n %K8S_NAMESPACE% exec %POD% -- sh -c "wget -qO- http://localhost:5000/health || true"
+          for /f "delims=" %%i in ('"%KUBECTL_EXE%" -n %K8S_NAMESPACE% get pod -l app=%K8S_DEPLOYMENT% -o jsonpath="{.items[0].metadata.name}"') do set POD=%%i
+          "%KUBECTL_EXE%" -n %K8S_NAMESPACE% exec %POD% -- sh -c "wget -qO- http://localhost:5000/health || true"
