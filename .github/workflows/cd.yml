@@ -2,7 +2,7 @@ name: CD
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   # workflow_run:
   #   workflows: ["CI"]
   #   types: ["completed"]
@@ -10,6 +10,11 @@ on:
 jobs:
   deploy-to-cluster:
     runs-on: self-hosted
+
+    # 👇 Force ALL run steps to use Windows PowerShell (not pwsh)
+    defaults:
+      run:
+        shell: powershell
 
     env:
       REGISTRY: ghcr.io
@@ -22,8 +27,11 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Print shell to confirm
+        run: |
+          Write-Host "Using shell:" $PSVersionTable.PSVersion
+
       - name: Kubectl context + nodes
-        shell: pwsh
         run: |
           kubectl config use-context $env:KCTX
           kubectl get nodes
@@ -37,10 +45,9 @@ jobs:
 
       - name: Pick image tag (prefer SHA, fallback to latest)
         id: picktag
-        shell: pwsh
         run: |
-          $imgSha    = "${env:REGISTRY}/${env:IMAGE_NAME}:${env:GITHUB_SHA}"
-          $imgLatest = "${env:REGISTRY}/${env:IMAGE_NAME}:latest"
+          $imgSha    = "$($env:REGISTRY)/$($env:IMAGE_NAME):$($env:GITHUB_SHA)"
+          $imgLatest = "$($env:REGISTRY)/$($env:IMAGE_NAME):latest"
 
           function Test-Tag($ref) {
             docker manifest inspect $ref *>$null
@@ -48,7 +55,7 @@ jobs:
           }
 
           if (Test-Tag $imgSha) {
-            "use_tag=${env:GITHUB_SHA}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "use_tag=$($env:GITHUB_SHA)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
           elseif (Test-Tag $imgLatest) {
             "use_tag=latest" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -58,45 +65,40 @@ jobs:
             exit 1
           }
 
-      - name: Apply manifests
-        shell: pwsh
+      - name: Apply manifests (ns/deploy/svc)
         run: |
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
       - name: Set deployment image to chosen tag
-        shell: pwsh
         run: |
+          if (-not "${{ steps.picktag.outputs.use_tag }}") { Write-Error "use_tag empty"; exit 1 }
           $tag = "${{ steps.picktag.outputs.use_tag }}"
           kubectl -n $env:K8S_NAMESPACE set image deployment/$env:K8S_DEPLOYMENT `
             $env:K8S_DEPLOYMENT="$($env:REGISTRY)/$($env:IMAGE_NAME):$tag"
 
       - name: Wait for rollout
-        shell: pwsh
         run: |
           kubectl -n $env:K8S_NAMESPACE rollout status deploy/$env:K8S_DEPLOYMENT --timeout=240s
           kubectl -n $env:K8S_NAMESPACE get pods -o wide
 
       - name: Annotate deployment with commit metadata
         if: success()
-        shell: pwsh
         run: |
           kubectl -n $env:K8S_NAMESPACE annotate deploy/$env:K8S_DEPLOYMENT `
             "app.commit-sha=$env:GITHUB_SHA" "app.run-id=$env:GITHUB_RUN_ID" --overwrite
 
       - name: Sanity check /health from inside cluster (ephemeral curl pod)
-        shell: pwsh
         run: |
-          $ns  = "${env:K8S_NAMESPACE}"
+          $ns  = "$($env:K8S_NAMESPACE)"
           $svc = "timi-api-svc.$ns.svc.cluster.local:5000"
-          kubectl -n $ns delete pod curlcheck --ignore-not-found
+          kubectl -n $ns delete pod curlcheck --ignore-not-found | Out-Null
           kubectl -n $ns run curlcheck --restart=Never --image=curlimages/curl:8.10.1 `
             -- curl -fsS http://$svc/health
-          kubectl -n $ns delete pod curlcheck --ignore-not-found
+          kubectl -n $ns delete pod curlcheck --ignore-not-found | Out-Null
 
       - name: Rollback on failure
         if: failure()
-        shell: pwsh
         run: |
           kubectl -n $env:K8S_NAMESPACE rollout undo deploy/$env:K8S_DEPLOYMENT
