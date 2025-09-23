@@ -6,6 +6,44 @@
 const express = require("express");
 const cors = require("cors");
 const { query } = require("./db"); // helper Postgres (peut échouer si DB absente)
+const client = require("prom-client");
+
+// registre + métriques par défaut
+const register = new client.Registry();
+client.collectDefaultMetrics({ register });
+
+// métriques custom HTTP
+const httpRequests = new client.Counter({
+  name: "http_requests_total",
+  help: "Total HTTP requests",
+  labelNames: ["method", "route", "code"],
+});
+const httpDuration = new client.Histogram({
+  name: "http_request_duration_seconds",
+  help: "HTTP request duration (s)",
+  labelNames: ["method", "route", "code"],
+  buckets: [0.05, 0.1, 0.3, 0.6, 1, 2, 5],
+});
+register.registerMetric(httpRequests);
+register.registerMetric(httpDuration);
+
+// petit middleware pour instrumenter
+app.use((req, res, next) => {
+  const start = process.hrtime.bigint();
+  res.on("finish", () => {
+    const dur = Number(process.hrtime.bigint() - start) / 1e9;
+    httpRequests.inc({ method: req.method, route: req.path, code: String(res.statusCode) });
+    httpDuration.observe({ method: req.method, route: req.path, code: String(res.statusCode) }, dur);
+  });
+  next();
+});
+
+// endpoint /metrics
+app.get("/metrics", async (_req, res) => {
+  res.set("Content-Type", register.contentType);
+  res.end(await register.metrics());
+});
+
 
 const app = express();
 app.use(cors());
