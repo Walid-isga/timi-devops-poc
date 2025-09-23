@@ -1,21 +1,26 @@
 // app/db.js
-// Rôle : créer un pool de connexions Postgres réutilisable par l'API.
-
 const { Pool } = require("pg");
 
-// On lit la variable d'environnement DB_URL (définie dans .env et passée au conteneur)
-const connectionString = process.env.DB_URL;
+// Utilise DATABASE_URL si dispo, sinon une valeur locale par défaut
+const connectionString =
+  process.env.DATABASE_URL ||
+  "postgres://timi_user:timi_pass@localhost:5432/timi_db";
 
-// Le pool gère les connexions efficacement
+// Important : désactive SSL pour le cluster local (Kind)
 const pool = new Pool({
   connectionString,
-  // tu peux ajouter ssl, timeouts, etc. selon besoin
+  ssl: false,
+  // optionnel mais utile pour debug
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
 });
 
-// Petite fonction helper pour faire des requêtes SQL
-async function query(text, params) {
-  // text: la requête SQL ; params: tableau de valeurs pour $1, $2, ...
-  return pool.query(text, params);
-}
+pool.on("error", (err) => {
+  console.error("PG pool error:", err); // log clair si une connexion tombe
+});
 
-module.exports = { pool, query };
+module.exports = {
+  query: (text, params) => pool.query(text, params),
+  pool,
+};
