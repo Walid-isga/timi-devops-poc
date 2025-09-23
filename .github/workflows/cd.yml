@@ -3,20 +3,20 @@ name: CD
 on:
   push:
     branches: [ "main" ]
-  # 👉 Option (recommandée) pour n’exécuter CD **après CI réussi** :
+  # 👉 Option recommandée : n’exécuter CD qu’après CI réussi
   # workflow_run:
-  #   workflows: ["CI"]
+  #   workflows: [ "CI" ]
   #   types: [ "completed" ]
 
 jobs:
   deploy-to-cluster:
-    # 👉 si tu actives workflow_run ci-dessus, décommente la ligne suivante :
+    # 👉 Si tu actives workflow_run ci-dessus, décommente :
     # if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: self-hosted
 
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: walid-isga/timi-devops-poc     # ← même nom que CI, en minuscules
+      IMAGE_NAME: walid-isga/timi-devops-poc   # ⚠️ en minuscules
       K8S_NAMESPACE: timi
       K8S_DEPLOYMENT: timi-api
       KCTX: kind-timi
@@ -25,10 +25,10 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Sanity check cluster (uses local kubectl)
-        shell: cmd
+      - name: Kubectl context + nodes
+        shell: pwsh
         run: |
-          kubectl config use-context %KCTX%
+          kubectl config use-context $env:KCTX
           kubectl get nodes
 
       - name: Login to GHCR
@@ -42,7 +42,7 @@ jobs:
         id: picktag
         shell: pwsh
         run: |
-          $imgSha = "${env:REGISTRY}/${env:IMAGE_NAME}:${env:GITHUB_SHA}"
+          $imgSha    = "${env:REGISTRY}/${env:IMAGE_NAME}:${env:GITHUB_SHA}"
           $imgLatest = "${env:REGISTRY}/${env:IMAGE_NAME}:latest"
 
           function Test-Tag($ref) {
@@ -61,8 +61,8 @@ jobs:
             exit 1
           }
 
-      - name: Apply manifests
-        shell: cmd
+      - name: Apply manifests (ns/deploy/svc)
+        shell: pwsh
         run: |
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/deployment.yaml
@@ -84,13 +84,6 @@ jobs:
           kubectl -n $env:K8S_NAMESPACE rollout status deploy/$env:K8S_DEPLOYMENT --timeout=240s
           kubectl -n $env:K8S_NAMESPACE get pods -o wide
 
-
-      - name: Rollback on failure
-        if: failure()
-        shell: cmd
-        run: |
-          kubectl -n %K8S_NAMESPACE% rollout undo deploy/%K8S_DEPLOYMENT%
-
       - name: Annotate deployment with commit metadata
         if: success()
         shell: pwsh
@@ -98,17 +91,21 @@ jobs:
           kubectl -n $env:K8S_NAMESPACE annotate deploy/$env:K8S_DEPLOYMENT `
             "app.commit-sha=$env:GITHUB_SHA" "app.run-id=$env:GITHUB_RUN_ID" --overwrite
 
-
       - name: Sanity check /health from inside cluster (ephemeral curl pod)
         shell: pwsh
         run: |
           $ns  = "${env:K8S_NAMESPACE}"
           $svc = "timi-api-svc.$ns.svc.cluster.local:5000"
-          # Nettoyage si un pod précédent existe encore (idempotent)
+          # Nettoyage idempotent au cas où
           kubectl -n $ns delete pod curlcheck --ignore-not-found
-          # Lancer un pod curl non interactif, sortir non-0 si /health échoue
+          # Pod éphémère non interactif
           kubectl -n $ns run curlcheck --restart=Never --image=curlimages/curl:8.10.1 `
             -- curl -fsS http://$svc/health
-          # Attendre que le pod finisse (Succeeded) puis le supprimer
-          kubectl -n $ns wait --for=condition=Ready pod/curlcheck --timeout=30s || $true
+          # (Optionnel) supprimer explicitement s’il reste
           kubectl -n $ns delete pod curlcheck --ignore-not-found
+
+      - name: Rollback on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          kubectl -n $env:K8S_NAMESPACE rollout undo deploy/$env:K8S_DEPLOYMENT
