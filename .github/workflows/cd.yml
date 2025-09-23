@@ -86,6 +86,27 @@ jobs:
         run: |
           kubectl -n $env:K8S_NAMESPACE rollout status deploy/$env:K8S_DEPLOYMENT --timeout=240s
           kubectl -n $env:K8S_NAMESPACE get pods -o wide
+        
+      - name: Smoke test /health and /chantiers
+        shell: powershell
+        run: |
+          $ns  = "$($env:K8S_NAMESPACE)"
+          $svc = "timi-api-svc.$ns.svc.cluster.local:5000"
+
+          # Nettoyage si un pod test existe encore (idempotent)
+          kubectl -n $ns delete pod curl-smoke-1,curl-smoke-2 --ignore-not-found | Out-Null
+
+          # 1) /health doit renvoyer 200 (curl -f échoue si code ≠ 200)
+          kubectl -n $ns run curl-smoke-1 --restart=Never --image=curlimages/curl:8.10.1 `
+            -- curl -fsS http://$svc/health
+
+          # 2) /chantiers doit renvoyer un tableau JSON (on vérifie qu'il y a un '[')
+          kubectl -n $ns run curl-smoke-2 --restart=Never --image=curlimages/curl:8.10.1 `
+            -- sh -lc "curl -fsS http://$svc/chantiers | grep '\['"
+
+          # Nettoyage best-effort
+          kubectl -n $ns delete pod curl-smoke-1,curl-smoke-2 --ignore-not-found | Out-Null
+
 
       - name: Annotate deployment with commit metadata
         if: success()
