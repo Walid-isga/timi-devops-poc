@@ -58,5 +58,26 @@ jobs:
       - name: Sanity check /health from inside cluster
         shell: cmd
         run: |
-          for /f "delims=" %%i in ('kubectl -n %K8S_NAMESPACE% get pod -l app=%K8S_DEPLOYMENT% -o jsonpath="{.items[0].metadata.name}"') do set POD=%%i
+          rem 1) Récupérer le 1er pod via -o name, sans jsonpath
+          set POD=
+          for /f "delims=" %%i in ('kubectl -n %K8S_NAMESPACE% get pods -l app=%K8S_DEPLOYMENT% -o name') do (
+            if not defined POD set POD=%%i
+          )
+          if not defined POD (
+            echo No pod found for app=%K8S_DEPLOYMENT%
+            kubectl -n %K8S_NAMESPACE% get pods -l app=%K8S_DEPLOYMENT%
+            exit /b 1
+          )
+
+          rem 2) Le format est "pod/<name>" -> on enlève le prefixe
+          set POD=%POD:pod/=%
+          echo Using POD=%POD%
+
+          rem 3) Appel /health depuis le pod
           kubectl -n %K8S_NAMESPACE% exec %POD% -- sh -c "wget -qO- http://localhost:5000/health || true"
+
+      - name: List pods (debug)
+        shell: cmd
+        run: |
+          kubectl -n %K8S_NAMESPACE% get pods -l app=%K8S_DEPLOYMENT% -o wide
+
