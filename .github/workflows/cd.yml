@@ -49,21 +49,25 @@ jobs:
           $imgSha    = "$($env:REGISTRY)/$($env:IMAGE_NAME):$($env:GITHUB_SHA)"
           $imgLatest = "$($env:REGISTRY)/$($env:IMAGE_NAME):latest"
 
-          function Test-Tag($ref) {
-            docker manifest inspect $ref *>$null
+          function Test-Tag([string]$ref) {
+            # Run under CMD to avoid PowerShell NativeCommandError surfacing
+            cmd /c "docker manifest inspect $ref >NUL 2>&1"
             return ($LASTEXITCODE -eq 0)
           }
 
           if (Test-Tag $imgSha) {
             "use_tag=$($env:GITHUB_SHA)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "Using SHA tag: $imgSha"
           }
           elseif (Test-Tag $imgLatest) {
             "use_tag=latest" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "Using fallback :latest → $imgLatest"
           }
           else {
             Write-Error "Neither $imgSha nor $imgLatest exists in GHCR."
             exit 1
           }
+
 
       - name: Apply manifests (ns/deploy/svc)
         run: |
