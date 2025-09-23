@@ -3,20 +3,17 @@ name: CD
 on:
   push:
     branches: [ "main" ]
-  # Optional: run CD only after CI succeeds
   # workflow_run:
   #   workflows: ["CI"]
   #   types: ["completed"]
 
 jobs:
   deploy-to-cluster:
-    # If you enable workflow_run above, also enable:
-    # if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: self-hosted
 
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: walid-isga/timi-devops-poc   # must be lowercase
+      IMAGE_NAME: walid-isga/timi-devops-poc
       K8S_NAMESPACE: timi
       K8S_DEPLOYMENT: timi-api
       KCTX: kind-timi
@@ -61,7 +58,7 @@ jobs:
             exit 1
           }
 
-      - name: Apply manifests (ns/deploy/svc)
+      - name: Apply manifests
         shell: pwsh
         run: |
           kubectl apply -f k8s/namespace.yaml
@@ -71,9 +68,6 @@ jobs:
       - name: Set deployment image to chosen tag
         shell: pwsh
         run: |
-          if (-not "${{ steps.picktag.outputs.use_tag }}") {
-            Write-Error "No image tag resolved (use_tag is empty)"; exit 1
-          }
           $tag = "${{ steps.picktag.outputs.use_tag }}"
           kubectl -n $env:K8S_NAMESPACE set image deployment/$env:K8S_DEPLOYMENT `
             $env:K8S_DEPLOYMENT="$($env:REGISTRY)/$($env:IMAGE_NAME):$tag"
@@ -96,12 +90,9 @@ jobs:
         run: |
           $ns  = "${env:K8S_NAMESPACE}"
           $svc = "timi-api-svc.$ns.svc.cluster.local:5000"
-          # Cleanup if a previous pod exists (idempotent)
           kubectl -n $ns delete pod curlcheck --ignore-not-found
-          # Run a non-interactive ephemeral curl pod; fail if HTTP != 200
           kubectl -n $ns run curlcheck --restart=Never --image=curlimages/curl:8.10.1 `
             -- curl -fsS http://$svc/health
-          # Best-effort cleanup
           kubectl -n $ns delete pod curlcheck --ignore-not-found
 
       - name: Rollback on failure
