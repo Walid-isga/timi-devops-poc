@@ -5,12 +5,12 @@ on:
     branches: [ "main" ]
 
 jobs:
-  deploy-to-kind:
+  deploy-to-cluster:
     runs-on: self-hosted
 
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: walid-isga/timi-devops-poc   # lowercase
+      IMAGE_NAME: walid-isga/timi-devops-poc   # ⚠️ en minuscules
       K8S_NAMESPACE: timi
       K8S_DEPLOYMENT: timi-api
       KCTX: kind-timi
@@ -19,41 +19,44 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # Download a portable kubectl (no need to rely on PATH)
-      - name: Fetch kubectl v1.30.0 (portable)
+      - name: Sanity check cluster (uses local kubectl)
         shell: cmd
         run: |
-          powershell -Command "Invoke-WebRequest -Uri https://dl.k8s.io/release/v1.30.0/bin/windows/amd64/kubectl.exe -OutFile kubectl.exe"
-          if not exist kubectl.exe ( echo kubectl.exe download failed & exit /b 1 )
-          echo KUBECTL_EXE=%CD%\kubectl.exe>> %GITHUB_ENV%
+          kubectl config use-context %KCTX%
+          kubectl get nodes
 
-      - name: Sanity check cluster
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull :latest (optional visibility)
         shell: cmd
         run: |
-          "%KUBECTL_EXE%" version --client
-          "%KUBECTL_EXE%" config use-context %KCTX%
-          "%KUBECTL_EXE%" get nodes
+          docker pull %REGISTRY%/%IMAGE_NAME%:latest
 
       - name: Apply manifests
         shell: cmd
         run: |
-          "%KUBECTL_EXE%" apply -f k8s/namespace.yaml
-          "%KUBECTL_EXE%" apply -f k8s/deployment.yaml
-          "%KUBECTL_EXE%" apply -f k8s/service.yaml
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
 
       - name: Set deployment image to :latest (cluster pulls from GHCR)
         shell: cmd
         run: |
-          "%KUBECTL_EXE%" -n %K8S_NAMESPACE% set image deployment/%K8S_DEPLOYMENT% %K8S_DEPLOYMENT%=%REGISTRY%/%IMAGE_NAME%:latest
+          kubectl -n %K8S_NAMESPACE% set image deployment/%K8S_DEPLOYMENT% %K8S_DEPLOYMENT%=%REGISTRY%/%IMAGE_NAME%:latest
 
       - name: Wait for rollout
         shell: cmd
         run: |
-          "%KUBECTL_EXE%" -n %K8S_NAMESPACE% rollout status deploy/%K8S_DEPLOYMENT% --timeout=240s
-          "%KUBECTL_EXE%" -n %K8S_NAMESPACE% get pods -o wide
+          kubectl -n %K8S_NAMESPACE% rollout status deploy/%K8S_DEPLOYMENT% --timeout=240s
+          kubectl -n %K8S_NAMESPACE% get pods -o wide
 
-      - name: Sanity check /health inside cluster
+      - name: Sanity check /health from inside cluster
         shell: cmd
         run: |
-          for /f "delims=" %%i in ('"%KUBECTL_EXE%" -n %K8S_NAMESPACE% get pod -l app=%K8S_DEPLOYMENT% -o jsonpath="{.items[0].metadata.name}"') do set POD=%%i
-          "%KUBECTL_EXE%" -n %K8S_NAMESPACE% exec %POD% -- sh -c "wget -qO- http://localhost:5000/health || true"
+          for /f "delims=" %%i in ('kubectl -n %K8S_NAMESPACE% get pod -l app=%K8S_DEPLOYMENT% -o jsonpath="{.items[0].metadata.name}"') do set POD=%%i
+          kubectl -n %K8S_NAMESPACE% exec %POD% -- sh -c "wget -qO- http://localhost:5000/health || true"
