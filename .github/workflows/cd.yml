@@ -40,21 +40,26 @@ jobs:
 
       - name: Pick image tag (prefer SHA, fallback to latest)
         id: picktag
-        shell: cmd
+        shell: pwsh
         run: |
-          setlocal enabledelayedexpansion
-          set IMG_SHA=%REGISTRY%/%IMAGE_NAME%:%GITHUB_SHA%
-          set IMG_LATEST=%REGISTRY%/%IMAGE_NAME%:latest
-          echo Checking %IMG_SHA%
-          docker manifest inspect %IMG_SHA% >NUL 2>&1
-          if %errorlevel%==0 (
-            echo use_tag=%GITHUB_SHA%>> %GITHUB_OUTPUT%
-            exit /b 0
-          )
-          echo SHA not found; using latest
-          docker manifest inspect %IMG_LATEST% >NUL 2>&1
-          if %errorlevel% neq 0 ( echo Neither SHA nor latest exists & exit /b 1 )
-          echo use_tag=latest>> %GITHUB_OUTPUT%
+          $imgSha = "${env:REGISTRY}/${env:IMAGE_NAME}:${env:GITHUB_SHA}"
+          $imgLatest = "${env:REGISTRY}/${env:IMAGE_NAME}:latest"
+
+          function Test-Tag($ref) {
+            docker manifest inspect $ref *>$null
+            return ($LASTEXITCODE -eq 0)
+          }
+
+          if (Test-Tag $imgSha) {
+            "use_tag=${env:GITHUB_SHA}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+          elseif (Test-Tag $imgLatest) {
+            "use_tag=latest" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+          else {
+            Write-Error "Neither $imgSha nor $imgLatest exists in GHCR."
+            exit 1
+          }
 
       - name: Apply manifests
         shell: cmd
@@ -64,16 +69,21 @@ jobs:
           kubectl apply -f k8s/service.yaml
 
       - name: Set deployment image to chosen tag
-        shell: cmd
+        shell: pwsh
         run: |
-          set TAG=${{ steps.picktag.outputs.use_tag }}
-          kubectl -n %K8S_NAMESPACE% set image deployment/%K8S_DEPLOYMENT% %K8S_DEPLOYMENT%=%REGISTRY%/%IMAGE_NAME%:%TAG%
+          if (-not "${{ steps.picktag.outputs.use_tag }}") {
+            Write-Error "No image tag resolved (use_tag is empty)"; exit 1
+          }
+          $tag = "${{ steps.picktag.outputs.use_tag }}"
+          kubectl -n $env:K8S_NAMESPACE set image deployment/$env:K8S_DEPLOYMENT `
+            $env:K8S_DEPLOYMENT="$($env:REGISTRY)/$($env:IMAGE_NAME):$tag"
 
       - name: Wait for rollout
-        shell: cmd
+        shell: pwsh
         run: |
-          kubectl -n %K8S_NAMESPACE% rollout status deploy/%K8S_DEPLOYMENT% --timeout=240s
-          kubectl -n %K8S_NAMESPACE% get pods -o wide
+          kubectl -n $env:K8S_NAMESPACE rollout status deploy/$env:K8S_DEPLOYMENT --timeout=240s
+          kubectl -n $env:K8S_NAMESPACE get pods -o wide
+
 
       - name: Rollback on failure
         if: failure()
@@ -83,18 +93,22 @@ jobs:
 
       - name: Annotate deployment with commit metadata
         if: success()
-        shell: cmd
+        shell: pwsh
         run: |
-          kubectl -n %K8S_NAMESPACE% annotate deploy/%K8S_DEPLOYMENT% ^
-            app.commit-sha=%GITHUB_SHA% app.run-id=%GITHUB_RUN_ID% --overwrite
+          kubectl -n $env:K8S_NAMESPACE annotate deploy/$env:K8S_DEPLOYMENT `
+            "app.commit-sha=$env:GITHUB_SHA" "app.run-id=$env:GITHUB_RUN_ID" --overwrite
 
-      - name: Sanity check /health (inside cluster)
-        shell: powershell
+
+      - name: Sanity check /health from inside cluster (ephemeral curl pod)
+        shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
           $ns  = "${env:K8S_NAMESPACE}"
-          $app = "${env:K8S_DEPLOYMENT}"
-          kubectl -n $ns get pods -l app=$app -o wide
-          $pod = kubectl -n $ns get pod -l app=$app -o jsonpath="{.items[0].metadata.name}"
-          if ([string]::IsNullOrWhiteSpace($pod)) { throw "No pod found for app=$app" }
-          kubectl -n $ns exec $pod -- sh -c "wget -qO- http://localhost:5000/health || true"
+          $svc = "timi-api-svc.$ns.svc.cluster.local:5000"
+          # Nettoyage si un pod précédent existe encore (idempotent)
+          kubectl -n $ns delete pod curlcheck --ignore-not-found
+          # Lancer un pod curl non interactif, sortir non-0 si /health échoue
+          kubectl -n $ns run curlcheck --restart=Never --image=curlimages/curl:8.10.1 `
+            -- curl -fsS http://$svc/health
+          # Attendre que le pod finisse (Succeeded) puis le supprimer
+          kubectl -n $ns wait --for=condition=Ready pod/curlcheck --timeout=30s || $true
+          kubectl -n $ns delete pod curlcheck --ignore-not-found
