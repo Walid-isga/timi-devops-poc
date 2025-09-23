@@ -3,20 +3,20 @@ name: CD
 on:
   push:
     branches: [ "main" ]
-  # 👉 Option recommandée : n’exécuter CD qu’après CI réussi
+  # Optional: run CD only after CI succeeds
   # workflow_run:
-  #   workflows: [ "CI" ]
-  #   types: [ "completed" ]
+  #   workflows: ["CI"]
+  #   types: ["completed"]
 
 jobs:
   deploy-to-cluster:
-    # 👉 Si tu actives workflow_run ci-dessus, décommente :
+    # If you enable workflow_run above, also enable:
     # if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: self-hosted
 
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: walid-isga/timi-devops-poc   # ⚠️ en minuscules
+      IMAGE_NAME: walid-isga/timi-devops-poc   # must be lowercase
       K8S_NAMESPACE: timi
       K8S_DEPLOYMENT: timi-api
       KCTX: kind-timi
@@ -96,12 +96,12 @@ jobs:
         run: |
           $ns  = "${env:K8S_NAMESPACE}"
           $svc = "timi-api-svc.$ns.svc.cluster.local:5000"
-          # Nettoyage idempotent au cas où
+          # Cleanup if a previous pod exists (idempotent)
           kubectl -n $ns delete pod curlcheck --ignore-not-found
-          # Pod éphémère non interactif
+          # Run a non-interactive ephemeral curl pod; fail if HTTP != 200
           kubectl -n $ns run curlcheck --restart=Never --image=curlimages/curl:8.10.1 `
             -- curl -fsS http://$svc/health
-          # (Optionnel) supprimer explicitement s’il reste
+          # Best-effort cleanup
           kubectl -n $ns delete pod curlcheck --ignore-not-found
 
       - name: Rollback on failure
