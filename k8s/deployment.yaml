@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: timi-api
+  namespace: timi
+  labels:
+    app: timi-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: timi-api
+  template:
+    metadata:
+      labels:
+        app: timi-api
+    spec:
+      containers:
+        - name: timi-api
+          image: ghcr.io/walid-isga/timi-devops-poc:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+          env:
+            - name: PORT
+              value: "5000"
+          readinessProbe:
+            httpGet: { path: /health, port: 5000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 5000 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
