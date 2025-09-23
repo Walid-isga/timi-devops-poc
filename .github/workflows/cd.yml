@@ -56,25 +56,24 @@ jobs:
           kubectl -n %K8S_NAMESPACE% get pods -o wide
 
       - name: Sanity check /health from inside cluster
-        shell: cmd
+        shell: powershell
         run: |
-          rem 1) Récupérer le 1er pod via -o name, sans jsonpath
-          set POD=
-          for /f "delims=" %%i in ('kubectl -n %K8S_NAMESPACE% get pods -l app=%K8S_DEPLOYMENT% -o name') do (
-            if not defined POD set POD=%%i
-          )
-          if not defined POD (
-            echo No pod found for app=%K8S_DEPLOYMENT%
-            kubectl -n %K8S_NAMESPACE% get pods -l app=%K8S_DEPLOYMENT%
-            exit /b 1
-          )
+          $ErrorActionPreference = "Stop"
+          $ns  = "${env:K8S_NAMESPACE}"
+          $app = "${env:K8S_DEPLOYMENT}"
 
-          rem 2) Le format est "pod/<name>" -> on enlève le prefixe
-          set POD=%POD:pod/=%
-          echo Using POD=%POD%
+          Write-Host "Listing pods for app=$app in ns=$ns ..."
+          kubectl -n $ns get pods -l app=$app -o wide
 
-          rem 3) Appel /health depuis le pod
-          kubectl -n %K8S_NAMESPACE% exec %POD% -- sh -c "wget -qO- http://localhost:5000/health || true"
+          # Récupère le 1er pod par JSONPath (robuste avec PowerShell)
+          $pod = kubectl -n $ns get pod -l app=$app -o jsonpath="{.items[0].metadata.name}"
+          if ([string]::IsNullOrWhiteSpace($pod)) {
+            Write-Error "No pod found for label app=$app"
+          } else {
+            Write-Host "Using POD=$pod"
+            kubectl -n $ns exec $pod -- sh -c "wget -qO- http://localhost:5000/health || true"
+          }
+
 
       - name: List pods (debug)
         shell: cmd
