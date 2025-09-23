@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: timi-api
+  namespace: monitoring
+  labels:
+    release: prom               # 👈 doit matcher le nom de release Helm (prom)
+spec:
+  namespaceSelector:
+    matchNames: ["timi"]        # 👈 où est le Service
+  selector:
+    matchLabels:
+      app: timi-api             # 👈 labels du Service
+  endpoints:
+    - port: http                # 👈 nom du port du Service
+      path: /metrics
+      interval: 15s
+      scheme: http

@@ -1,47 +1,41 @@
 name: CI
 
-# 🔔 Déclenche à chaque push/PR sur main
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
-# ⚙️ Donne le droit d'écrire dans GHCR
 permissions:
   contents: read
   packages: write
 
-# 🌍 Variables communes
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}  # -> ghcr.io/<owner>/<repo>
+  IMAGE_NAME: walid-isga/timi-devops-poc  # ← en minuscules (important pour GHCR)
 
 jobs:
   test-build-push:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Récupère le code du repo
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2) Setup Node.js pour exécuter les tests
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
-      # 3) Installe toutes les deps (prod + dev pour Jest)
       - name: Install dependencies
         run: npm ci
 
-      # 4) Lance les tests (Jest lit "test" dans package.json)
       - name: Run unit tests
+        env:
+          CI: "true"
         run: npm test
 
-      # 5) Se connecter au registre GHCR avec le GITHUB_TOKEN
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -49,8 +43,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 6) Prépare les tags/labels (latest + sha du commit)
-      - name: Extract Docker metadata
+      - name: Docker metadata (latest + sha)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -59,11 +52,13 @@ jobs:
             type=raw,value=latest
             type=sha
 
-      # 7) Build l'image Docker et push vers GHCR
-      - name: Build and push Docker image
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Echo digest
+        run: echo "digest=${{ steps.meta.outputs.digest }}"

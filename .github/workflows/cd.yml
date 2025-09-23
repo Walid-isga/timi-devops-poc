@@ -3,14 +3,20 @@ name: CD
 on:
   push:
     branches: [ "main" ]
+  # 👉 Option (recommandée) pour n’exécuter CD **après CI réussi** :
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [ "completed" ]
 
 jobs:
   deploy-to-cluster:
+    # 👉 si tu actives workflow_run ci-dessus, décommente la ligne suivante :
+    # if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: self-hosted
 
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: walid-isga/timi-devops-poc   # ⚠️ en minuscules
+      IMAGE_NAME: walid-isga/timi-devops-poc     # ← même nom que CI, en minuscules
       K8S_NAMESPACE: timi
       K8S_DEPLOYMENT: timi-api
       KCTX: kind-timi
@@ -32,10 +38,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull :latest (optional visibility)
+      - name: Pick image tag (prefer SHA, fallback to latest)
+        id: picktag
         shell: cmd
         run: |
-          docker pull %REGISTRY%/%IMAGE_NAME%:latest
+          setlocal enabledelayedexpansion
+          set IMG_SHA=%REGISTRY%/%IMAGE_NAME%:%GITHUB_SHA%
+          set IMG_LATEST=%REGISTRY%/%IMAGE_NAME%:latest
+          echo Checking %IMG_SHA%
+          docker manifest inspect %IMG_SHA% >NUL 2>&1
+          if %errorlevel%==0 (
+            echo use_tag=%GITHUB_SHA%>> %GITHUB_OUTPUT%
+            exit /b 0
+          )
+          echo SHA not found; using latest
+          docker manifest inspect %IMG_LATEST% >NUL 2>&1
+          if %errorlevel% neq 0 ( echo Neither SHA nor latest exists & exit /b 1 )
+          echo use_tag=latest>> %GITHUB_OUTPUT%
 
       - name: Apply manifests
         shell: cmd
@@ -44,10 +63,11 @@ jobs:
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
-      - name: Set deployment image to :latest (cluster pulls from GHCR)
+      - name: Set deployment image to chosen tag
         shell: cmd
         run: |
-          kubectl -n %K8S_NAMESPACE% set image deployment/%K8S_DEPLOYMENT% %K8S_DEPLOYMENT%=%REGISTRY%/%IMAGE_NAME%:latest
+          set TAG=${{ steps.picktag.outputs.use_tag }}
+          kubectl -n %K8S_NAMESPACE% set image deployment/%K8S_DEPLOYMENT% %K8S_DEPLOYMENT%=%REGISTRY%/%IMAGE_NAME%:%TAG%
 
       - name: Wait for rollout
         shell: cmd
@@ -55,28 +75,26 @@ jobs:
           kubectl -n %K8S_NAMESPACE% rollout status deploy/%K8S_DEPLOYMENT% --timeout=240s
           kubectl -n %K8S_NAMESPACE% get pods -o wide
 
-      - name: Sanity check /health from inside cluster
+      - name: Rollback on failure
+        if: failure()
+        shell: cmd
+        run: |
+          kubectl -n %K8S_NAMESPACE% rollout undo deploy/%K8S_DEPLOYMENT%
+
+      - name: Annotate deployment with commit metadata
+        if: success()
+        shell: cmd
+        run: |
+          kubectl -n %K8S_NAMESPACE% annotate deploy/%K8S_DEPLOYMENT% ^
+            app.commit-sha=%GITHUB_SHA% app.run-id=%GITHUB_RUN_ID% --overwrite
+
+      - name: Sanity check /health (inside cluster)
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
           $ns  = "${env:K8S_NAMESPACE}"
           $app = "${env:K8S_DEPLOYMENT}"
-
-          Write-Host "Listing pods for app=$app in ns=$ns ..."
           kubectl -n $ns get pods -l app=$app -o wide
-
-          # Récupère le 1er pod par JSONPath (robuste avec PowerShell)
           $pod = kubectl -n $ns get pod -l app=$app -o jsonpath="{.items[0].metadata.name}"
-          if ([string]::IsNullOrWhiteSpace($pod)) {
-            Write-Error "No pod found for label app=$app"
-          } else {
-            Write-Host "Using POD=$pod"
-            kubectl -n $ns exec $pod -- sh -c "wget -qO- http://localhost:5000/health || true"
-          }
-
-
-      - name: List pods (debug)
-        shell: cmd
-        run: |
-          kubectl -n %K8S_NAMESPACE% get pods -l app=%K8S_DEPLOYMENT% -o wide
-
+          if ([string]::IsNullOrWhiteSpace($pod)) { throw "No pod found for app=$app" }
+          kubectl -n $ns exec $pod -- sh -c "wget -qO- http://localhost:5000/health || true"

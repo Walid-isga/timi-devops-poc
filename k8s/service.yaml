@@ -3,10 +3,13 @@ kind: Service
 metadata:
   name: timi-api-svc
   namespace: timi
+  labels:
+    app: timi-api
 spec:
+  type: ClusterIP
   selector:
     app: timi-api
   ports:
     - name: http
-      port: 5000
-      targetPort: 5000
+      port: 5000        # port du service dans le cluster
+      targetPort: 5000  # doit matcher le containerPort dans le Deployment

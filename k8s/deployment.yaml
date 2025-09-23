@@ -15,6 +15,21 @@ spec:
       labels:
         app: timi-api
     spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for Postgres...";
+              until pg_isready -h postgres -p 5432 -U timi_user; do sleep 2; done;
+              echo "Postgres is ready."
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secret
+                  key: POSTGRES_PASSWORD
       containers:
         - name: timi-api
           image: ghcr.io/walid-isga/timi-devops-poc:latest
@@ -24,6 +39,8 @@ spec:
           env:
             - name: PORT
               value: "5000"
+            - name: DATABASE_URL
+              value: "postgres://timi_user:timi_pass@postgres.timi.svc.cluster.local:5432/timi_db"
           readinessProbe:
             httpGet: { path: /health, port: 5000 }
             initialDelaySeconds: 5

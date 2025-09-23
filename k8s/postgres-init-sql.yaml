@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-init-sql
+  namespace: timi
+data:
+  001_init.sql: |
+    CREATE TABLE IF NOT EXISTS chantiers (
+      id SERIAL PRIMARY KEY,
+      nom TEXT NOT NULL,
+      debut DATE,
+      fin DATE,
+      statut TEXT DEFAULT 'planifie'
+    );
+
+    INSERT INTO chantiers (nom, debut, fin, statut) VALUES
+    ('Résidence Atlas', '2025-06-01', '2025-12-15', 'en_cours'),
+    ('Immeuble Ifriqya', '2025-04-10', '2025-10-30', 'planifie')
+    ON CONFLICT DO NOTHING;
