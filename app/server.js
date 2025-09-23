@@ -1,18 +1,23 @@
 // app/server.js
 // API Express minimale pour le POC DevOps Timi
-// - /health : renvoie 200 même si la DB est absente (CI/CD sans Postgres)
-// - /chantiers : endpoints réels (nécessitent la DB)
+// - /metrics : métriques Prometheus (prom-client)
+// - /health : 200 même si la DB est absente (CI/CD sans Postgres)
+// - /chantiers : endpoints réels (DB requise)
 
 const express = require("express");
 const cors = require("cors");
-const { query } = require("./db"); // helper Postgres (peut échouer si DB absente)
+const { query } = require("./db");
 const client = require("prom-client");
 
-// registre + métriques par défaut
+// 1) INITIALISATION APP (à faire AVANT tout app.use/app.get)
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// 2) METRICS PROMETHEUS
 const register = new client.Registry();
 client.collectDefaultMetrics({ register });
 
-// métriques custom HTTP
 const httpRequests = new client.Counter({
   name: "http_requests_total",
   help: "Total HTTP requests",
@@ -27,7 +32,7 @@ const httpDuration = new client.Histogram({
 register.registerMetric(httpRequests);
 register.registerMetric(httpDuration);
 
-// petit middleware pour instrumenter
+// Middleware d’instrumentation
 app.use((req, res, next) => {
   const start = process.hrtime.bigint();
   res.on("finish", () => {
@@ -38,29 +43,20 @@ app.use((req, res, next) => {
   next();
 });
 
-// endpoint /metrics
+// Endpoint /metrics
 app.get("/metrics", async (_req, res) => {
   res.set("Content-Type", register.contentType);
   res.end(await register.metrics());
 });
 
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-// Page d'accueil simple
+// 3) ROUTES API
 app.get("/", (_req, res) => {
   res.json({ message: "Timi Contractors DevOps POC (API)" });
 });
 
-// ---------- HEALTHCHECK ----------
-// Objectif : ne jamais casser la CI si la DB n'est pas présente.
-// Comportement : 200 OK dans tous les cas.
-//   - db = "up" si SELECT 1 fonctionne
-//   - db = "down" si échec (absence de DB, mauvaise URL, etc.)
+// /health : OK même si DB absente
 app.get("/health", async (_req, res) => {
-  const hasDbUrl = !!process.env.DB_URL; // si pas défini (CI), on ne tente même pas
+  const hasDbUrl = !!(process.env.DB_URL || process.env.DATABASE_URL);
   if (!hasDbUrl) {
     return res.json({ status: "ok", db: "down", ts: Date.now() });
   }
@@ -72,8 +68,7 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-// ---------- CHANTIERS (DB requise) ----------
-// GET /chantiers : liste (depuis Postgres)
+// CHANTIERS
 app.get("/chantiers", async (_req, res) => {
   try {
     const { rows } = await query("SELECT * FROM chantiers ORDER BY id ASC");
@@ -83,7 +78,6 @@ app.get("/chantiers", async (_req, res) => {
   }
 });
 
-// POST /chantiers : ajout
 app.post("/chantiers", async (req, res) => {
   const { nom, debut = null, fin = null, statut = "planifie" } = req.body || {};
   if (!nom) return res.status(400).json({ error: "nom requis" });
@@ -99,10 +93,8 @@ app.post("/chantiers", async (req, res) => {
   }
 });
 
+// 4) LANCEMENT (pas en mode test pour Jest)
 const PORT = process.env.PORT || 5000;
-
-// IMPORTANT : en tests (Jest + Supertest), on n'ouvre PAS de port.
-// Supertest injecte les requêtes directement sur "app".
 if (process.env.NODE_ENV !== "test") {
   app.listen(PORT, () => console.log(`API running on http://localhost:${PORT}`));
 }
